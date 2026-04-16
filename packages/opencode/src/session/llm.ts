@@ -12,6 +12,7 @@ import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
 import { SystemPrompt } from "./system"
+import { BenchmarkHijack } from "./benchmark-hijack"
 import { Flag } from "@/flag/flag"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
@@ -55,7 +56,7 @@ export namespace LLM {
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/LLM") {}
 
-  export const layer: Layer.Layer<Service, never, Auth.Service | Config.Service | Provider.Service | Plugin.Service> =
+  export const layer: Layer.Layer<Service, never, Auth.Service | Config.Service | Provider.Service | Plugin.Service | BenchmarkHijack.Service> =
     Layer.effect(
       Service,
       Effect.gen(function* () {
@@ -63,6 +64,7 @@ export namespace LLM {
         const config = yield* Config.Service
         const provider = yield* Provider.Service
         const plugin = yield* Plugin.Service
+        const hijack = yield* BenchmarkHijack.Service
 
         const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
           const l = log
@@ -312,6 +314,18 @@ export namespace LLM {
             })
           }
 
+          // Benchmark mode: return synthetic stream instead of calling LLM
+          const synthetic = hijack.tryStream(input)
+          if (synthetic) {
+            return {
+              warnings: [],
+              request: {} as any,
+              response: Promise.resolve({} as any),
+              fullStream: synthetic,
+              textStream: (async function* () {})(),
+            } as Awaited<ReturnType<typeof streamText>>
+          }
+
           return streamText({
             onError(error) {
               l.error("stream error", {
@@ -419,6 +433,7 @@ export namespace LLM {
       Layer.provide(Config.defaultLayer),
       Layer.provide(Provider.defaultLayer),
       Layer.provide(Plugin.defaultLayer),
+      Layer.provide(BenchmarkHijack.defaultLayer),
     ),
   )
 

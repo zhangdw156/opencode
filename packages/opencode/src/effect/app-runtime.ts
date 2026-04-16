@@ -33,6 +33,7 @@ import { SessionSummary } from "@/session/summary"
 import { SessionPrompt } from "@/session/prompt"
 import { Instruction } from "@/session/instruction"
 import { LLM } from "@/session/llm"
+import { BenchmarkHijack } from "@/session/benchmark-hijack"
 import { LSP } from "@/lsp"
 import { MCP } from "@/mcp"
 import { McpAuth } from "@/mcp/auth"
@@ -80,6 +81,7 @@ export const AppLayer = Layer.mergeAll(
   SessionSummary.defaultLayer,
   SessionPrompt.defaultLayer,
   Instruction.defaultLayer,
+  BenchmarkHijack.defaultLayer,
   LLM.defaultLayer,
   LSP.defaultLayer,
   MCP.defaultLayer,
