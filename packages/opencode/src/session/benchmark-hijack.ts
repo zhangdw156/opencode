@@ -16,7 +16,7 @@ export namespace BenchmarkHijack {
     unbindSession(sessionID: string): void
     enqueueReply(sessionID: string, reply: string): void
     clear(sessionID: string): void
-    tryStream(input: Pick<LLM.StreamInput, "sessionID" | "small">): AsyncGenerator<LLM.Event> | null
+    tryStream(input: Pick<LLM.StreamInput, "sessionID" | "small" | "agent">): AsyncGenerator<LLM.Event> | null
   }
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/BenchmarkHijack") {}
@@ -45,6 +45,8 @@ export namespace BenchmarkHijack {
       },
       tryStream(input) {
         if (!enabled || !bound.has(input.sessionID) || input.small) return null
+        // Let compaction run against the real LLM so it produces a genuine summary
+        if (input.agent?.name === "compaction") return null
         const q = queues.get(input.sessionID)
         if (!q || q.length === 0) return null
         const text = q.shift()!
