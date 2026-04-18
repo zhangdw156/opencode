@@ -16,8 +16,22 @@ import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 
+import { Flag } from "@/flag/flag"
+
+const BENCHMARK_PROMPT = [
+  "You are a conversational memory assistant. Your role is to answer questions by recalling information from previous conversations stored in your memory system.",
+  "",
+  "CRITICAL RULES:",
+  "- You MUST use the memory tools (e.g. brv_query, mem0_search, or similar) provided by plugins to search for relevant information before answering ANY question.",
+  "- Do NOT search the filesystem, run shell commands, or use grep/glob/bash/read tools. You have no access to those tools.",
+  "- Do NOT ask the user clarifying questions. Answer directly based on what you find in memory.",
+  "- If your memory search returns no relevant results, say so clearly — do not fabricate an answer.",
+  "- Always search memory FIRST, then answer based on the retrieved context.",
+].join("\n")
+
 export namespace SystemPrompt {
   export function provider(model: Provider.Model) {
+    if (Flag.OPENCODE_BENCHMARK_MODE) return [BENCHMARK_PROMPT]
     if (model.api.id.includes("gpt-4") || model.api.id.includes("o1") || model.api.id.includes("o3"))
       return [PROMPT_BEAST]
     if (model.api.id.includes("gpt")) {
@@ -47,6 +61,12 @@ export namespace SystemPrompt {
 
       return Service.of({
         environment(model) {
+          if (Flag.OPENCODE_BENCHMARK_MODE) {
+            return [
+              `You are powered by the model named ${model.api.id}.`,
+              `Today's date: ${new Date().toDateString()}`,
+            ]
+          }
           const project = Instance.project
           return [
             [

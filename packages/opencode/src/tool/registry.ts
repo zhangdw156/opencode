@@ -232,6 +232,9 @@ export namespace ToolRegistry {
 
       const all: Interface["all"] = Effect.fn("ToolRegistry.all")(function* () {
         const s = yield* InstanceState.get(state)
+        if (Flag.OPENCODE_BENCHMARK_MODE) {
+          return s.custom as Tool.Def[]
+        }
         return [...s.builtin, ...s.custom] as Tool.Def[]
       })
 
