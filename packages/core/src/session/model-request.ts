@@ -33,6 +33,7 @@ import { Permission } from "../permission.js"
 import { PluginHooks } from "../plugin/hooks.js"
 import { QuestionTool } from "../tool/plugin/question.js"
 import { Tool } from "../tool.js"
+import { Evaluation } from "./runner/evaluation.js"
 import { SessionAffinity } from "./affinity.js"
 import { SessionModelTransport } from "./model-transport.js"
 import { SessionRunnerModel } from "./runner/model.js"
@@ -275,6 +276,12 @@ export const layer = Layer.effect(
         },
         Object.fromEntries(Array.from(given, ([d, t]) => [t.name, d])),
       )
+      if (Evaluation.enabled) {
+        const evaluation = yield* Evaluation.adapter
+        if (shaped.tools)
+          for (const name of Object.keys(shaped.tools)) if (!evaluation.names.includes(name)) delete shaped.tools[name]
+        shaped.system = [SystemPart.make(evaluation.system)]
+      }
       // Match by identity first, then by key. Entries matching neither were invented by a
       // hook and are dropped. `t.name` stays the real name so execution can map renames back.
       const byName = new Map(tools.definitions.map((t) => [t.name, t]))
@@ -326,6 +333,7 @@ export const layer = Layer.effect(
           : base.model.route
       const request = {
         ...base,
+        ...(Evaluation.enabled ? { includeRaw: true } : {}),
         model: route === base.model.route ? base.model : LanguageModel.update(base.model, { route }),
         http: new HttpOptions({
           ...base.http,
@@ -395,9 +403,17 @@ export const layer = Layer.effect(
       return {
         event: shaped,
         request,
-        options: { ...(http ? { http } : {}), ...(webSocket ? { webSocket } : {}) },
+        options: Evaluation.enabled
+          ? { http: Evaluation.transport(scope) }
+          : { ...(http ? { http } : {}), ...(webSocket ? { webSocket } : {}) },
         retry: (event: Parameters<Prepared["retry"]>[0]) =>
-          hooks.trigger("session", "retry", event).pipe(Effect.asVoid),
+          Effect.gen(function* () {
+            yield* hooks.trigger("session", "retry", event)
+            if (Evaluation.enabled) {
+              const evaluation = yield* Evaluation.adapter
+              if (event.attempt > evaluation.maxRetries + 1) event.decision = { retry: false }
+            }
+          }),
         // Permission.assert and the question tool throw declines as defects so tools cannot
         // catch them and turn a "no" into model-visible output. Recover them here as failures,
         // including declines a tool rethrew and its wrapper attached to a Tool.Error, as Promise

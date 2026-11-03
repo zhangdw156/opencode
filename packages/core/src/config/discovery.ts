@@ -60,6 +60,8 @@ export const discover = Effect.fn("ConfigDiscovery.discover")(function* (options
   const fs = yield* FSUtil.Service
   const global = yield* Global.Service
   const location = yield* Location.Service
+  if (process.env.GLITTER_OPENCODE_ADAPTER)
+    return { global: AbsolutePath.make(global.config), direct: [], project: [], claude: [], agents: [] }
   const system = (() => {
     if (options?.system === false) return
     if (typeof options?.system === "string") return AbsolutePath.make(path.resolve(options.system))

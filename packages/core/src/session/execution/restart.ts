@@ -99,10 +99,7 @@ export const layer = (options?: Options) =>
         return true
       })
 
-      const restartMessage = (
-        background: Job.Background,
-        recovery: Exclude<Job.Recovery, { kind: "subagent" }>,
-      ) => {
+      const restartMessage = (background: Job.Background, recovery: Exclude<Job.Recovery, { kind: "subagent" }>) => {
         const state = background.status === "running" ? "cancelled" : background.status
         if (recovery.kind === "shell") {
           const text =
@@ -220,6 +217,8 @@ export const layer = (options?: Options) =>
 
       return Service.of({
         resumeSuspendedSessions: Effect.gen(function* () {
+          // Glitter restores ARE and mounts MCP before explicitly resuming its saved session.
+          if (process.env.GLITTER_OPENCODE_ADAPTER) return
           const active = yield* execution.active
           const pending = yield* jobs.pendingBackground
           const children = pending.flatMap((background) =>
