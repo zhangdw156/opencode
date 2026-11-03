@@ -2,6 +2,7 @@ export * as Evaluation from "./evaluation.js"
 
 import type { LLMEvent } from "@opencode/ai/effect"
 import type { StreamOptions } from "@opencode/ai/route"
+import type { UserPayload } from "@opencode/schema/session-inbox"
 import type { Model } from "@opencode/schema/model"
 import { Cause, Effect, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
@@ -17,7 +18,8 @@ interface Scope {
 interface Adapter {
   names: string[]
   system: string
-  boundary(): Promise<string[]>
+  maxRetries: number
+  boundary(): Promise<UserPayload[]>
   stopped(): Promise<boolean>
   allowTool(name: string): Promise<boolean>
   begin(scope: Scope, request: unknown): Promise<string>

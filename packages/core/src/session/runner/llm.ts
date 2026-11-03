@@ -242,8 +242,17 @@ const layer = Layer.effect(
       yield* plugins.awaitActivation
       if (Evaluation.enabled) {
         const evaluation = yield* Evaluation.adapter
-        for (const text of yield* Effect.promise(() => evaluation.boundary()))
-          yield* bus.publish(SessionEvent.Synthetic, { sessionID, text })
+        for (const payload of yield* Effect.promise(() => evaluation.boundary())) {
+          if (!payload.files?.length) {
+            yield* bus.publish(SessionEvent.Synthetic, { sessionID, text: payload.text })
+            continue
+          }
+          yield* bus.publish(SessionEvent.InboxEnqueued, {
+            sessionID,
+            inboxID: SessionMessage.ID.create(),
+            item: { type: "user", delivery: "steer", payload },
+          })
+        }
       }
       const selected = yield* context.select(sessionID)
       // A blocked initial instruction baseline must leave admitted input pending.

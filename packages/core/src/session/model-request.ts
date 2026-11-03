@@ -407,7 +407,13 @@ export const layer = Layer.effect(
           ? { http: Evaluation.transport(scope) }
           : { ...(http ? { http } : {}), ...(webSocket ? { webSocket } : {}) },
         retry: (event: Parameters<Prepared["retry"]>[0]) =>
-          hooks.trigger("session", "retry", event).pipe(Effect.asVoid),
+          Effect.gen(function* () {
+            yield* hooks.trigger("session", "retry", event)
+            if (Evaluation.enabled) {
+              const evaluation = yield* Evaluation.adapter
+              if (event.attempt > evaluation.maxRetries + 1) event.decision = { retry: false }
+            }
+          }),
         // Permission.assert and the question tool throw declines as defects so tools cannot
         // catch them and turn a "no" into model-visible output. Recover them here as failures,
         // including declines a tool rethrew and its wrapper attached to a Tool.Error, as Promise
