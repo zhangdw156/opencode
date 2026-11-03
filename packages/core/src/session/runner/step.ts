@@ -25,6 +25,7 @@ import { toSessionError } from "../to-session-error.js"
 import { SessionUsage } from "../usage.js"
 import { SessionRunnerModel } from "./model.js"
 import { createLLMEventPublisher } from "./publish-llm-event.js"
+import { Evaluation } from "./evaluation.js"
 import { SessionRunnerRetry } from "./retry.js"
 
 export type Outcome = Data.TaggedEnum<{
@@ -92,17 +93,36 @@ export const make = Effect.gen(function* () {
       readonly fiber: Fiber.Fiber<void, Permission.DeclinedError | QuestionTool.CancelledError>
     }> = []
     const interruptTools = Effect.suspend(() => Fiber.interruptAll(toolRuns.map((run) => run.fiber)))
-    const executeTool = (call: ToolCall) => {
+    const evaluation = Evaluation.enabled ? yield* Evaluation.adapter : undefined
+    const deferredTools: ToolCall[] = []
+    const executeTool = Effect.fnUntraced(function* (call: ToolCall) {
+      if (evaluation && !(yield* Effect.promise(() => evaluation.allowTool(call.name))))
+        return yield* new Tool.Error({ message: "Only current scenario tools may execute during an active turn" })
       if (input.prepared.request.toolChoice?.type === "none")
-        return new Tool.Error({ message: "Tools are disabled after the maximum agent steps" })
-      return input.prepared.executeTool({
+        return yield* new Tool.Error({ message: "Tools are disabled after the maximum agent steps" })
+      return yield* input.prepared.executeTool({
         sessionID: input.sessionID,
         agent: input.agent,
         messageID: input.assistantMessageID,
         call,
         progress: (update) => publisher.progress(call.id, update),
       })
-    }
+    })
+
+    const runTool = Effect.fnUntraced(function* (event: ToolCall) {
+      toolRuns.push({
+        call: event,
+        fiber: yield* Effect.uninterruptibleMask((restore) =>
+          restore(executeTool(event)).pipe(
+            Effect.flatMap((outcome) => (evaluation ? Effect.succeed(outcome) : toolOutput.truncate(outcome))),
+            Effect.flatMap((outcome) => publisher.toolExecution(event.id, event.name, outcome)),
+            Effect.catchTag("Tool.Error", (error) =>
+              publisher.failTool(event.id, toSessionError(error), error.metadata).pipe(Effect.asVoid),
+            ),
+          ),
+        ).pipe(Effect.forkScoped),
+      })
+    })
 
     // Provider and tool fibers retain per-source order without a shared writer queue.
     // A local execution starts only after its Tool.Called publication completes.
@@ -110,6 +130,7 @@ export const make = Effect.gen(function* () {
     const providerStream = llm.stream(input.prepared.request, input.prepared.options).pipe(
       Stream.runForEach((event) =>
         Effect.gen(function* () {
+          if (evaluation) yield* Effect.sync(() => evaluation.event(event))
           if (publisher.record().providerFailed) return
           // Wait here, where cancellation still works, rather than inside the uninterruptible publish.
           if (!publisher.hasStarted()) yield* Fiber.join(pendingStartSnapshot)
@@ -117,27 +138,28 @@ export const make = Effect.gen(function* () {
           if (firstOutputAt === undefined && publisher.record().outputStarted)
             firstOutputAt = yield* Clock.currentTimeMillis
           if (event.type !== "tool-call" || event.providerExecuted) return
-          toolRuns.push({
-            call: event,
-            fiber: yield* Effect.uninterruptibleMask((restore) =>
-              restore(executeTool(event)).pipe(
-                Effect.flatMap(toolOutput.truncate),
-                Effect.flatMap((outcome) => publisher.toolExecution(event.id, event.name, outcome)),
-                Effect.catchTag("Tool.Error", (error) =>
-                  publisher.failTool(event.id, toSessionError(error), error.metadata).pipe(Effect.asVoid),
-                ),
-              ),
-            ).pipe(Effect.forkScoped),
-          })
+          if (evaluation) deferredTools.push(event)
+          else yield* runTool(event)
         }),
       ),
       Effect.ensuring(publisher.flush()),
+      Effect.onExit((exit) =>
+        evaluation
+          ? Effect.promise(() => evaluation.settled(Exit.isFailure(exit) ? Cause.pretty(exit.cause) : undefined))
+          : Effect.void,
+      ),
     )
 
     // Keep the final tool and Step events uninterruptible, even when the work itself is cancelled.
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const stream = yield* restore(providerStream).pipe(Effect.exit)
+        // Evaluation clocks resume when the model stream closes, before scenario tools run.
+        if (evaluation && Exit.isSuccess(stream))
+          for (const call of deferredTools) {
+            yield* runTool(call)
+            yield* restore(Fiber.await(toolRuns[toolRuns.length - 1]!.fiber))
+          }
         const streamFailure = Option.getOrUndefined(Exit.findErrorOption(stream))
         const streamInterrupted = Exit.hasInterrupts(stream)
         // Cancelled before the start snapshot existed: record nothing, as when the capture preceded the request.

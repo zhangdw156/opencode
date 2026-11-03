@@ -32,6 +32,7 @@ import { SessionStep } from "./step.js"
 import { ToolOutput } from "../../tool-output.js"
 import { Plugin } from "../../plugin.js"
 import { PluginHooks } from "../../plugin/hooks.js"
+import { Evaluation } from "./evaluation.js"
 import { MAX_STEPS_PROMPT } from "./max-steps.js"
 
 const CONTINUE_AFTER_INCOMPLETE_STREAM =
@@ -178,7 +179,9 @@ const layer = Layer.effect(
                 // The Session would go idle; a plugin may admit input to keep this execution working.
                 yield* restore(
                   SessionBackground.outstanding(jobs, store, sessionID).pipe(
-                    Effect.flatMap((background) => hooks.trigger("session", "experimental.idle", { sessionID, background })),
+                    Effect.flatMap((background) =>
+                      hooks.trigger("session", "experimental.idle", { sessionID, background }),
+                    ),
                   ),
                 )
                 if (!(yield* SessionInbox.has(db, sessionID, "input"))) return DrainResult.Complete()
@@ -195,7 +198,12 @@ const layer = Layer.effect(
                   )
                   // A control admitted during context preparation owns this boundary.
                   if (promoted === undefined) return undefined
-                  if (promoted > 0 && !selected.session.parentID && SessionTitle.isUntitled(selected.session))
+                  if (
+                    !Evaluation.enabled &&
+                    promoted > 0 &&
+                    !selected.session.parentID &&
+                    SessionTitle.isUntitled(selected.session)
+                  )
                     yield* FiberMap.run(titles, sessionID, title.generate(sessionID), {
                       onlyIfMissing: true,
                     })
@@ -212,7 +220,16 @@ const layer = Layer.effect(
       while (true) {
         const next = yield* advanceToStep()
         if (next._tag !== "Ready") return next
+        if (Evaluation.enabled) {
+          const evaluation = yield* Evaluation.adapter
+          if (yield* Effect.promise(() => evaluation.stopped())) return DrainResult.Complete()
+        }
         continuing = yield* runStep(next.context, step)
+        // Step settlement has persisted all results before a terminal scenario tool ends the turn.
+        if (Evaluation.enabled) {
+          const evaluation = yield* Evaluation.adapter
+          if (yield* Effect.promise(() => evaluation.stopped())) return DrainResult.Complete()
+        }
         stepped = true
         step++
         force = false
@@ -223,6 +240,11 @@ const layer = Layer.effect(
     const prepareContext = Effect.fn("SessionRunner.prepareContext")(function* (sessionID: SessionSchema.ID) {
       // Plugins can reload mid-turn; each step and retry must read the settled agents, models and skills.
       yield* plugins.awaitActivation
+      if (Evaluation.enabled) {
+        const evaluation = yield* Evaluation.adapter
+        for (const text of yield* Effect.promise(() => evaluation.boundary()))
+          yield* bus.publish(SessionEvent.Synthetic, { sessionID, text })
+      }
       const selected = yield* context.select(sessionID)
       // A blocked initial instruction baseline must leave admitted input pending.
       yield* InstructionState.prepare(db, bus, selected.instructions, sessionID)
